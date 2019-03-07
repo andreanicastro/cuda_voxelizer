@@ -48,3 +48,19 @@ TARGET_LINK_LIBRARIES ( ${CUDA_VOXELIZER_EXECUTABLE}
   ${Trimesh2_LIBRARY}
   gomp
 )
+
+CUDA_ADD_EXECUTABLE(
+  voxelize_ycb
+  src/main_ycb.cpp
+  src/util_cuda.cpp
+  src/util_io.cpp
+  ${CUDA_VOXELIZER_SRCS_CU}
+  )
+
+TARGET_INCLUDE_DIRECTORIES(voxelize_ycb PUBLIC
+  ${Trimesh2_INCLUDE_DIR})
+
+TARGET_LINK_LIBRARIES( voxelize_ycb 
+  ${Trimesh2_LIBRARY}
+  gomp )
+
