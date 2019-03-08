@@ -1,4 +1,3 @@
-#include "util.h"
 #include "util_io.h"
 
 using namespace std;
