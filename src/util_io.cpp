@@ -35,6 +35,56 @@ void write_binary(void* data, size_t bytes, const std::string base_filename){
 	output.close();
 }
 
+void write_binvox(const unsigned int* vtable, const std::string filename, const voxinfo& vinfo) {
+  std::cout << "[I/O] Writing data tin binvox format to " << filename << std::endl;
+  std::ofstream output(filename.c_str(), ios::out | ios::binary);
+  assert(output);
+
+  // write ASCII header
+  output << "binvox 1" << std::endl;
+  output << "dim " << vinfo.gridsize.x << " " << vinfo.gridsize.y << " " << vinfo.gridsize.z << std::endl;
+  output << "translate " << vinfo.bbox.min.x << " " << vinfo.bbox.min.y << " " << vinfo.bbox.min.z << std::endl;
+  output << "scale "  << vinfo.unit.x << std::endl;
+  output << "data" << std::endl;
+
+  write_data(output, vtable, vinfo.gridsize);
+
+  output.close();
+}
+
+
+void write_data(std::ofstream& file, const unsigned int* vtable, const glm::vec3& gridsize) {
+  // write first voxel
+  char current_value = checkVoxel(0, 0, 0, gridsize.x, vtable);
+  file.write((char*)&current_value, 1);
+  char current_seen = 1;
+
+  for (size_t x = 0; x < gridsize.x; ++x) {
+    for (size_t z = 0; z < gridsize.z; ++z) {
+      for (size_t y = 0; y < gridsize.y; ++y) {
+        if (x == 0 && y == 0 && z == 0) {
+          continue;
+        }
+        char nextvalue = checkVoxel(x, y, z, gridsize.x, vtable);
+        if (nextvalue != current_value || current_seen == (char) 255) {
+          file.write((char*)&current_seen, 1);
+          current_seen = 1;
+          current_value = nextvalue;
+          file.write((char*)&current_value, 1);
+        }
+        else {
+          ++current_seen;
+        }
+      }
+    }
+  }
+  
+  //write rest
+  file.write((char*)&current_seen, 1);
+}
+
+
+
 void write_binvox(const unsigned int* vtable, const size_t gridsize, const std::string base_filename){
 	// Open file
 	string filename_output = base_filename + string("_") + to_string(gridsize) + string(".binvox");
@@ -49,33 +99,7 @@ void write_binvox(const unsigned int* vtable, const size_t gridsize, const std::
 	output << "dim " << gridsize << " " << gridsize << " " << gridsize << "" << endl;
 	output << "data" << endl;
 
-	// Write first voxel
-	char currentvalue = checkVoxel(0, 0, 0, gridsize, vtable);
-	output.write((char*)&currentvalue, 1);
-	char current_seen = 1;
+  write_data(output, vtable, glm::vec3(gridsize));
 
-	// Write BINARY Data
-	for (size_t x = 0; x < gridsize; x++){
-		for (size_t z = 0; z < gridsize; z++){
-			for (size_t y = 0; y < gridsize; y++){
-				if (x == 0 && y == 0 && z == 0){
-					continue;
-				}
-				char nextvalue = checkVoxel(x, y, z, gridsize, vtable);
-				if (nextvalue != currentvalue || current_seen == (char) 255){
-					output.write((char*)&current_seen, 1);
-					current_seen = 1;
-					currentvalue = nextvalue;
-					output.write((char*)&currentvalue, 1);
-				}
-				else {
-					current_seen++;
-				}
-			}
-		}
-	}
-
-	// Write rest
-	output.write((char*)&current_seen, 1);
 	output.close();
 }
