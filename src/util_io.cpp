@@ -40,11 +40,11 @@ void write_binvox(const unsigned int* vtable, const std::string filename, const 
   assert(output);
 
   // write ASCII header
-  output << "binvox 1" << std::endl;
-  output << "dim " << vinfo.gridsize.x << " " << vinfo.gridsize.y << " " << vinfo.gridsize.z << std::endl;
-  output << "translate " << vinfo.bbox.min.x << " " << vinfo.bbox.min.y << " " << vinfo.bbox.min.z << std::endl;
-  output << "scale "  << vinfo.unit.x << std::endl;
-  output << "data" << std::endl;
+  output << "#binvox 1\n";
+  output << "dim " << vinfo.gridsize.x << " " << vinfo.gridsize.y << " " << vinfo.gridsize.z << "\n";
+  output << "translate " << vinfo.bbox.min.x << " " << vinfo.bbox.min.y << " " << vinfo.bbox.min.z << "\n";
+  output << "scale "  << vinfo.unit.x << "\n";
+  output << "data\n";
 
   write_data(output, vtable, vinfo.gridsize);
 

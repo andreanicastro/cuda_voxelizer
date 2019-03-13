@@ -60,6 +60,15 @@ __device__ inline uint64_t mortonEncode_LUT(unsigned int x, unsigned int y, unsi
 //	unsigned int bit_pos = size_t(31) - (index % size_t(32)); // we count bit positions RtL, but array indices LtR
 //	return ((voxel_table[int_location]) & (1 << bit_pos));
 //}
+__device__ __inline__ void flipBit(unsigned int* voxel_table, size_t index, size_t value) {
+  size_t int_location = index / size_t(32);
+  unsigned int bit_pos = size_t(31) - (index % size_t(32));
+  unsigned int mask;
+  if(value == 1) {
+     mask = 1 << bit_pos;
+  }
+  atomicXor(&(voxel_table[int_location]), mask);
+}
 
 // Set a bit in the giant voxel table. This involves doing an atomic operation on a 32-bit word in memory.
 // Blocking other threads writing to it for a very short time
@@ -69,6 +78,7 @@ __device__ __inline__ void setBit(unsigned int* voxel_table, size_t index){
 	unsigned int mask = 1 << bit_pos;
 	atomicOr(&(voxel_table[int_location]), mask);
 }
+
 
 // Main triangle voxelization method
 __global__ void voxelize_triangle(voxinfo info, float* triangle_data, unsigned int* voxel_table, bool morton_order){
@@ -197,7 +207,152 @@ __global__ void voxelize_triangle(voxinfo info, float* triangle_data, unsigned i
 	}
 }
 
-void voxelize(const voxinfo& v, float* triangle_data, unsigned int* vtable, bool useThrustPath, bool morton_code) {
+
+__global__ void createPlane(voxinfo info, unsigned int* vtable) {
+  int x = threadIdx.x;
+  int z = blockIdx.x;
+
+  size_t location = x + (10 * info.gridsize.y) + (z * info.gridsize.y * info.gridsize.z);
+  setBit(vtable, location);
+  location = x + (30 * info.gridsize.y) + (z * info.gridsize.y * info.gridsize.z);
+  setBit(vtable, location);
+}
+
+
+__global__ void rasterization(voxinfo info, float* triangle_data, unsigned int* voxel_table, bool morton_order) {
+  size_t thread_id = threadIdx.x + blockIdx.x * blockDim.x;
+  size_t stride = blockDim.x * gridDim.x;
+
+  glm::vec3 delta_p(info.unit.x, info.unit.y, info.unit.z);
+  glm::vec3 grid_max(info.gridsize.x - 1, info.gridsize.y - 1, info.gridsize.z - 1);
+  
+  while (thread_id < info.n_triangles) {
+    size_t t = thread_id * 9;
+
+    glm::vec3 v0 = glm::vec3(triangle_data[t    ], triangle_data[t + 1], triangle_data[t + 2]) - info.bbox.min;
+    glm::vec3 v1 = glm::vec3(triangle_data[t + 3], triangle_data[t + 4], triangle_data[t + 5]) - info.bbox.min;
+    glm::vec3 v2 = glm::vec3(triangle_data[t + 6], triangle_data[t + 7], triangle_data[t + 8]) - info.bbox.min;
+
+    glm::vec3 e0 = v1 - v0;
+    glm::vec3 e1 = v2 - v1;
+    glm::vec3 e2 = v0 - v2;
+
+    glm::vec3 normal = glm::normalize(glm::cross(e0,e1));
+
+
+    // COMPUTE TRIANGLE BOZ IN GRID
+    AABox<glm::vec3> t_bbox_world(glm::min(v0, glm::min(v1, v2)), glm::max(v0, glm::max(v1, v2)));
+    AABox<glm::ivec3> t_bbox_grid;
+    t_bbox_grid.min = glm::clamp(t_bbox_world.min / info.unit, glm::vec3(0.0f), grid_max);
+    t_bbox_grid.max = glm::clamp(t_bbox_world.max / info.unit, glm::vec3(0.0f), grid_max);
+
+    // zx plane checks
+		glm::vec2 n_zx_e0(-1.0f*e0.x, e0.z);
+		glm::vec2 n_zx_e1(-1.0f*e1.x, e1.z);
+		glm::vec2 n_zx_e2(-1.0f*e2.x, e2.z);
+		if (normal.y < 0.0f) {
+			n_zx_e0 = -n_zx_e0;
+			n_zx_e1 = -n_zx_e1;
+			n_zx_e2 = -n_zx_e2;
+		}
+		float d_xz_e0 = (-1.0f * glm::dot(n_zx_e0, glm::vec2(v0.z, v0.x)));
+		float d_xz_e1 = (-1.0f * glm::dot(n_zx_e1, glm::vec2(v1.z, v1.x)));
+		float d_xz_e2 = (-1.0f * glm::dot(n_zx_e2, glm::vec2(v2.z, v2.x)));
+
+    for (int z = t_bbox_grid.min.z; z <= t_bbox_grid.max.z; ++z) {
+      for (int x = t_bbox_grid.min.x; x <= t_bbox_grid.max.x; ++x) {
+        for (int y = t_bbox_grid.min.y; y <= grid_max.y; ++y) {
+          glm::vec3 voxel_centre(x * info.unit.x + info.unit.x / 2.0f,
+                                 y * info.unit.y + info.unit.y / 2.0f,
+                                 z * info.unit.z + info.unit.z / 2.0f);
+          
+					// XZ	
+					glm::vec2 p_zx(voxel_centre.z, voxel_centre.x);
+					if ((glm::dot(n_zx_e0, p_zx) + d_xz_e0) < 0.0f){ continue; }
+					if ((glm::dot(n_zx_e1, p_zx) + d_xz_e1) < 0.0f){ continue; }
+					if ((glm::dot(n_zx_e2, p_zx) + d_xz_e2) < 0.0f){ continue; }
+
+          size_t location; 
+          if (morton_order) {
+            location = mortonEncode_LUT(x, y, z);
+          } else {
+            location = x + (y * info.gridsize.y) + (z * info.gridsize.y * info.gridsize.z);
+          }
+
+          if (checkVoxel(x, y - 1, z, info.gridsize.x, voxel_table) == char(1)) 
+            continue;
+
+          setBit(voxel_table, location);
+          break;
+        }
+      }
+    }
+
+  thread_id += stride;
+  }
+}
+
+__global__ void fill_pass(voxinfo info, float* triangle_data, unsigned int* vtable, bool morton_order) {
+  int x = threadIdx.x;
+  int z = blockIdx.x;
+
+  int ymax = info.gridsize.y - 1;
+
+  bool flip = false;
+  for (int y = 1; y < ymax; ++y) {
+    char value = checkVoxel(x, y, z, info.gridsize.x, vtable);
+     flip = true;
+
+    
+    size_t location;
+    if (morton_order) {
+      location = mortonEncode_LUT(x, y, z);
+    } else {
+      location = x + (y * info.gridsize.y) + (z * info.gridsize.y * info.gridsize.z);
+    }
+
+    size_t int_location = location / size_t(32);
+    unsigned int bit_pos = size_t(31) - (location % size_t(32));
+
+    unsigned int mask = 0;
+    if (prev_value == char(1)) {
+      mask = 1 << bit_pos;
+    } 
+    atomicXor(&(vtable[int_location]), mask);
+  }
+}
+
+void solid_voxelize(const voxinfo& v, float* triangle_data, unsigned int* vtable,
+    bool morton_code, bool solid) {
+  float elapsed_time;
+
+
+  if (morton_code) {
+    checkCudaErrors(cudaMemcpyToSymbol(morton256_x, host_morton256_x, 256 * sizeof(uint32_t)));
+    checkCudaErrors(cudaMemcpyToSymbol(morton256_y, host_morton256_y, 256 * sizeof(uint32_t)));
+    checkCudaErrors(cudaMemcpyToSymbol(morton256_z, host_morton256_z, 256 * sizeof(uint32_t)));
+  }
+
+  int blockSize;
+  int minGridSize;
+  int gridSize;
+
+  cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, voxelize_triangle, 0, 0);
+  gridSize = (v.n_triangles + blockSize - 1) / blockSize;
+
+
+  voxelize_triangle<< <gridSize, blockSize>> >(v, triangle_data, vtable, morton_code);
+//  createPlane<<<v.gridsize.x, v.gridsize.y>>>(v, vtable);
+  //rasterization<< <gridSize, blockSize >> >(v, triangle_data, vtable, morton_code);
+  fill_pass<< <v.gridsize.x, v.gridsize.y>> >(v, triangle_data, vtable, morton_code);
+//  voxelize_triangle<< <gridSize, blockSize>> >(v, triangle_data, vtable, morton_code);
+  cudaDeviceSynchronize();
+}
+
+
+
+void voxelize(const voxinfo& v, float* triangle_data, unsigned int* vtable, 
+    bool useThrustPath, bool morton_code, bool solid) {
 	float   elapsedTime;
 
 	// These are only used when we're not using UNIFIED memory
