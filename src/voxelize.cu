@@ -536,6 +536,7 @@ void solid_voxelize(const voxinfo& v, std::vector<float*>& triangle_data, unsign
   unsigned int* vtable_obj;
   checkCudaErrors(cudaMallocManaged((void**)&vtable_obj, vtable_size));
 
+  std::cout << "NUMBER OF DEVICE TRIANGLES: " << triangle_data.size() << std::endl;
   int count = 1;
   for (size_t mesh = 0; mesh < triangle_data.size(); ++mesh) {
     std::cout << " - voxelizing obj #  " << count << std::endl;

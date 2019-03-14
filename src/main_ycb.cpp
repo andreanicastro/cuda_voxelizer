@@ -96,24 +96,24 @@ void multipleMeshesToGPU(const std::vector<std::shared_ptr<trimesh::TriMesh>>& m
   const size_t coords_per_vertex = 3;
 
 
-  for (int i = 0; i < meshes.size(); ++i) {
-    const auto& mesh = meshes[i];
+  for (int mesh_idx = 0; mesh_idx < meshes.size(); ++mesh_idx) {
+    const auto& mesh = meshes[mesh_idx];
     size_t n_faces = mesh->faces.size();
     const size_t n_floats = sizeof(float) * vertices_in_face * coords_per_vertex * n_faces;
     
-    float* t;
-    checkCudaErrors(cudaMallocManaged((void**) &t, n_floats));
+    checkCudaErrors(cudaMallocManaged((void**) &device_triangles[mesh_idx], n_floats));
     for (size_t i = 0; i < n_faces; ++i) {
       glm::vec3 v0 = trimesh_to_glm<trimesh::point>(mesh->vertices[mesh->faces[i][0]]);
       glm::vec3 v1 = trimesh_to_glm<trimesh::point>(mesh->vertices[mesh->faces[i][1]]);
       glm::vec3 v2 = trimesh_to_glm<trimesh::point>(mesh->vertices[mesh->faces[i][2]]);
       const size_t offset =  i * vertices_in_face * coords_per_vertex;
-      memcpy((t) + offset                         , glm::value_ptr(v0), sizeof(glm::vec3));
-      memcpy((t) + offset + coords_per_vertex     , glm::value_ptr(v1), sizeof(glm::vec3));
-      memcpy((t) + offset + 2 * coords_per_vertex , glm::value_ptr(v2), sizeof(glm::vec3));
+      memcpy((device_triangles[mesh_idx]) + offset                         ,
+          glm::value_ptr(v0), sizeof(glm::vec3));
+      memcpy((device_triangles[mesh_idx]) + offset + coords_per_vertex     , 
+          glm::value_ptr(v1), sizeof(glm::vec3));
+      memcpy((device_triangles[mesh_idx]) + offset + 2 * coords_per_vertex , 
+          glm::value_ptr(v2), sizeof(glm::vec3));
     }
-    device_triangles.push_back(t);
-    break;
   }
 }
 
@@ -248,11 +248,6 @@ void readObjectPoses(const nlohmann::json& jsondata, std::vector<trimesh::xform>
   size_t num_rows = jsondata["poses"].size();
   size_t num_cols = jsondata["poses"][0].size();
 
-  std::cout << "---------------" << std::endl;
-  std::cout << jsondata["poses"].size() << std::endl;
-  std::cout << jsondata["poses"][0].size() << std::endl;
-  std::cout << jsondata["poses"][0][0].size() << std::endl;
-  std::cout << "---------------" << std::endl;
   for (size_t obj = 0; obj < num_objects; ++obj) {
     trimesh::xform pose;
     for (size_t row = 0; row < num_rows; ++row) {
@@ -260,7 +255,6 @@ void readObjectPoses(const nlohmann::json& jsondata, std::vector<trimesh::xform>
         pose(row, col) = jsondata["poses"][row][col][obj].get<double>();
       }
     }
-    std::cout << "Pose for the obejct " << obj << "\n" << pose << std::endl;
     object_poses.push_back(pose);
   }
 }
@@ -325,6 +319,7 @@ int main(int argc, char *argv[]) {
   std::cout << "Moving meshes to Device" << std::endl;
 
   std::vector<float*> device_triangles;
+  device_triangles.reserve(themeshes.size());
   multipleMeshesToGPU(themeshes, device_triangles);
 
   std::cout << "\n## VOXELIZATION SETUP" << std::endl;
