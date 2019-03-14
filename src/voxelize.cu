@@ -4,6 +4,21 @@
 //__device__ size_t voxel_count = 0; // How many voxels did we count
 //__device__ size_t triangles_seen_count = 0; // Sanity check
 
+#define CudaCheckError()    __cudaCheckError( __FILE__, __LINE__ )
+inline void __cudaCheckError( const char *file, const int line ) {
+  cudaError err = cudaGetLastError();
+  if ( cudaSuccess != err ) { 
+    fprintf( stderr, "cudaCheckError() failed at %s:%i : %s\n", file, line, cudaGetErrorString( err ) );
+    exit( -1 );
+  }
+  err = cudaDeviceSynchronize();
+  if( cudaSuccess != err ) {
+    fprintf( stderr, "cudaCheckError() with sync failed at %s:%i : %s\n", file, line, cudaGetErrorString( err ) );
+    exit( -1 );
+  }
+  return;
+}
+
 __constant__ uint32_t morton256_x[256];
 __constant__ uint32_t morton256_y[256];
 __constant__ uint32_t morton256_z[256];
@@ -80,7 +95,7 @@ __device__ __inline__ void setBit(unsigned int* voxel_table, size_t index){
 __device__ __inline__ void unsetBit(unsigned int* voxel_table, size_t index) {
 
   size_t int_location = index / size_t(32);
-  unsigned int bit_pos = size_t(31) - (index & size_t(32));
+  unsigned int bit_pos = size_t(31) - (index % size_t(32));
   unsigned int mask = 1 << bit_pos;
   atomicAnd(&(voxel_table[int_location]), ~mask);
 }
@@ -330,13 +345,13 @@ __global__ void rasterization(voxinfo info, float* triangle_data, unsigned int* 
 
 
 __global__ void carveY(unsigned int* vtable_obj, unsigned int* vtable_carved, 
-                       const voxinfo& info, bool morton_order) {
+                       const voxinfo info, bool morton_order) {
   int x = threadIdx.x;
   int z = blockIdx.x;
 
-  size_t ymax = info.gridsize.y - 1;
+  int ymax = info.gridsize.y - 1;
 
-  for (size_t y = 0; y < ymax; ++y) {
+  for (int y = 0; y <= ymax; ++y) {
     size_t location;
     if (morton_order) {
       location = mortonEncode_LUT(x, y, z);
@@ -351,7 +366,7 @@ __global__ void carveY(unsigned int* vtable_obj, unsigned int* vtable_carved,
     unsetBit(vtable_carved, location);
   }
 
-  for (size_t y = ymax; y >= 0; --y) {
+  for (int y = ymax; y >= 0; --y) {
     size_t location;
     if (morton_order) {
       location = mortonEncode_LUT(x, y, z);
@@ -362,21 +377,36 @@ __global__ void carveY(unsigned int* vtable_obj, unsigned int* vtable_carved,
     if (checkBit(vtable_obj, location)) {
       break;
     }
-
-
     unsetBit(vtable_carved, location);
   }
+  
 }
 
 
 __global__ void carveX(unsigned int* vtable_obj, unsigned int* vtable_carved, 
-                      const voxinfo& info, bool morton_order) {
+                      const voxinfo info, bool morton_order) {
   int y = threadIdx.x;
   int z = blockIdx.x;
 
-  size_t xmax = info.gridsize.x - 1;
+  int xmax = info.gridsize.x - 1;
   
-  for (size_t x = 0; x <= xmax; ++x) {
+  for (int x = 0; x <= xmax; ++x) {
+    size_t location;
+
+    if (morton_order) {
+      location = mortonEncode_LUT(x, y, z);
+    } else {
+      location = x + (y * info.gridsize.y) + (z * info.gridsize.y * info.gridsize.z);
+    }
+
+    if (checkBit(vtable_obj, location)) {
+      break;
+    }
+    unsetBit(vtable_carved, location);
+  }
+  
+
+  for (int x = xmax; x >= 0; --x) {
     size_t location;
 
     if (morton_order) {
@@ -389,37 +419,36 @@ __global__ void carveX(unsigned int* vtable_obj, unsigned int* vtable_carved,
       break;
     }
 
-
     unsetBit(vtable_carved, location);
   }
-
-  for (size_t x = xmax; x >= 0; --x) {
-
-    size_t location;
-
-    if (morton_order) {
-      location = mortonEncode_LUT(x, y ,z);
-    } else {
-      location = x + (y * info.gridsize.y) + (z * info.gridsize.y * info.gridsize.z);
-    }
-
-    if (checkBit(vtable_obj, location)) {
-      break;
-    }
-
-    unsetBit(vtable_carved, location);
-  }
+  
 }
 
 
 __global__ void carveZ(unsigned int* vtable_obj, unsigned int* vtable_carved, 
-                       const voxinfo& info, bool morton_order) {
+                       const voxinfo info, bool morton_order) {
   int x = threadIdx.x;
   int y = blockIdx.x;
 
   size_t zmax = info.gridsize.z - 1;
 
-  for(size_t z = 0; z <= zmax; ++z) {
+  for(int z = 0; z <= zmax; ++z) {
+    size_t location;
+
+    if(morton_order) {
+      location = mortonEncode_LUT(x, y, z);
+    } else {
+      location = x + (y * info.gridsize.y) + (z * info.gridsize.y * info.gridsize.z);
+    }
+
+    if (checkBit(vtable_obj, location)) {
+      break;
+    }
+    unsetBit(vtable_carved, location);
+  }
+  
+
+  for(int z = zmax; z >= 0; --z) {
     size_t location;
 
     if(morton_order) {
@@ -432,57 +461,56 @@ __global__ void carveZ(unsigned int* vtable_obj, unsigned int* vtable_carved,
       break;
     }
 
-
     unsetBit(vtable_carved, location);
   }
-
-  for (size_t z = zmax; z >= 0; --z) {
-
-    size_t location;
-
-    if(morton_order) {
-      location = mortonEncode_LUT(x, y, z);
-    } else {
-      location = x + (y * info.gridsize.y) + (z * info.gridsize.y * info.gridsize.z);
-    }
-
-    if (checkBit(vtable_obj, location)) {
-      break;
-    }
-
-    unsetBit(vtable_carved, location);
-  }
+  
 }
 
-__global__ void mergeVtables(unsigned int* v1, unsigned int* v2, const voxinfo& info, bool morton_order) {
+__global__ void mergeVtables(unsigned int* dst, unsigned int* src, const voxinfo info, bool morton_order) {
+
   int x = threadIdx.x;
-  printf("%d\n", x);
-
+  int y = blockIdx.x;
   size_t zmax = info.gridsize.z - 1;
-  size_t ymax = info.gridsize.y - 1;
 
-  for (size_t y = 0; y <= ymax; ++y) {
+  for (int z = 0; z <= 255; ++z) {
 
-    for (size_t z = 0; z <= zmax; ++z) {
-
-      size_t location;
-      if(morton_order) {
-        location = mortonEncode_LUT(x, y, z);
-      } else {
-        location = x + (y * info.gridsize.y) + (z * info.gridsize.y * info.gridsize.z);
-      }
-
-      printf("working");
-      if (!checkBit(v2, location)) {
-        continue;
-      }
-
-      setBit(v1, location);
+    size_t location;
+    if(morton_order) {
+      location = mortonEncode_LUT(x, y, z);
+    } else {
+      location = x + (y * info.gridsize.y) + (z * info.gridsize.y * info.gridsize.z);
     }
+
+    if (!checkBit(src, location)) {
+      continue;
+    }
+
+    setBit(dst, location);
   }
+  
 }
 
-void solid_voxelize(const voxinfo& v, std::vector<float*> triangle_data, unsigned int* vtable, 
+
+__global__ void clear(unsigned int* dst, const voxinfo info, bool morton_order) {
+
+  int x = threadIdx.x;
+  int y = blockIdx.x;
+  size_t zmax = info.gridsize.z - 1;
+
+  for (int z = 0; z <= zmax; ++z) {
+
+    size_t location;
+    if(morton_order) {
+      location = mortonEncode_LUT(x, y, z);
+    } else {
+      location = x + (y * info.gridsize.y) + (z * info.gridsize.y * info.gridsize.z);
+    }
+    unsetBit(dst, location);
+  }
+  
+}
+
+void solid_voxelize(const voxinfo& v, std::vector<float*>& triangle_data, unsigned int* vtable, 
     bool morton_code) {
   float elapsed_time;
 
@@ -509,18 +537,26 @@ void solid_voxelize(const voxinfo& v, std::vector<float*> triangle_data, unsigne
   checkCudaErrors(cudaMallocManaged((void**)&vtable_obj, vtable_size));
 
   int count = 1;
-  for (float* gpu_triangles: triangle_data) {
+  for (size_t mesh = 0; mesh < triangle_data.size(); ++mesh) {
     std::cout << " - voxelizing obj #  " << count << std::endl;
-//    checkCudaErrors(cudaMemset((void**)vtable_obj, -1, vtable_size));
-//    checkCudaErrors(cudaMemset((void**)vtable_obj, -1, vtable_size));
+    checkCudaErrors(cudaMemset((void**)vtable_carved, -1, vtable_size));
+    checkCudaErrors(cudaMemset(vtable_obj, 0, vtable_size));
 
-    voxelize_triangle<<<gridSize, blockSize>>>(v, gpu_triangles, vtable_obj, morton_code);
-    //carveX<<<v.gridsize.y, v.gridsize.z>>>(vtable_obj, vtable_carved, v, morton_code);
-    //carveY<<<v.gridsize.x, v.gridsize.z>>>(vtable_obj, vtable_carved, v, morton_code);
-    //carveZ<<<v.gridsize.x, v.gridsize.y>>>(vtable_obj, vtable_carved, v, morton_code);
-    //mergeVtables<<<v.gridsize.x, v.gridsize.y>>>(vtable_obj, vtable_carved, v, morton_code);
-    mergeVtables<<<1, 256>>>(vtable, vtable_obj, v, morton_code);
-    cudaDeviceSynchronize();
+    //clear<<<v.gridsize.y, v.gridsize.x>>>(vtable, v, morton_code);
+    checkCudaErrors(cudaDeviceSynchronize());
+    voxelize_triangle<<<gridSize, blockSize>>>(v, triangle_data[mesh], vtable_obj, morton_code);
+    checkCudaErrors(cudaDeviceSynchronize());
+    carveX<<<v.gridsize.z, v.gridsize.y>>>(vtable_obj, vtable_carved, v, morton_code);
+    checkCudaErrors(cudaDeviceSynchronize());
+    carveY<<<v.gridsize.z, v.gridsize.x>>>(vtable_obj, vtable_carved, v, morton_code);
+    checkCudaErrors(cudaDeviceSynchronize());
+    carveZ<<<v.gridsize.y, v.gridsize.x>>>(vtable_obj, vtable_carved, v, morton_code);
+    checkCudaErrors(cudaDeviceSynchronize());
+    mergeVtables<<<v.gridsize.y, v.gridsize.x>>>(vtable_obj, vtable_carved, v, morton_code);
+    checkCudaErrors(cudaDeviceSynchronize());
+    mergeVtables<<<v.gridsize.y, v.gridsize.x>>>(vtable, vtable_obj, v, morton_code);
+    checkCudaErrors(cudaDeviceSynchronize());
+
     ++count;
   }
   // checkCudaErrors(cudaMemcpy(vtable, vtable_obj, vtable_size, cudaMemcpyDeviceToDevice));

@@ -48,7 +48,7 @@ unsigned int gridsize = 256;
 float griddim = 1.5;
 bool useThrustPath = false;
 
-void solid_voxelize(const voxinfo & v, std::vector<float*> triangle_data, unsigned int* vtable, 
+void solid_voxelize(const voxinfo & v,std::vector<float*>& device_triangles, unsigned int* vtable, 
     bool morton_coded);
 
 size_t computeNumberOfFaces(const std::vector<std::shared_ptr<trimesh::TriMesh>>& meshes) {
@@ -90,29 +90,31 @@ float* meshesToGPU(const std::vector<std::shared_ptr<trimesh::TriMesh>>& meshes)
 }
 
 
-std::vector<float*> multipleMeshesToGPU(const std::vector<std::shared_ptr<trimesh::TriMesh>>& meshes){
+void multipleMeshesToGPU(const std::vector<std::shared_ptr<trimesh::TriMesh>>& meshes,
+                         std::vector<float*>& device_triangles){
   const size_t vertices_in_face = 3;
   const size_t coords_per_vertex = 3;
 
-  std::vector<float*> device_triangles;
-  for (const auto& mesh: meshes) {
+
+  for (int i = 0; i < meshes.size(); ++i) {
+    const auto& mesh = meshes[i];
     size_t n_faces = mesh->faces.size();
     const size_t n_floats = sizeof(float) * vertices_in_face * coords_per_vertex * n_faces;
     
-    float* triangles;
-    checkCudaErrors(cudaMallocManaged((void**) &triangles, n_floats));
+    float* t;
+    checkCudaErrors(cudaMallocManaged((void**) &t, n_floats));
     for (size_t i = 0; i < n_faces; ++i) {
       glm::vec3 v0 = trimesh_to_glm<trimesh::point>(mesh->vertices[mesh->faces[i][0]]);
       glm::vec3 v1 = trimesh_to_glm<trimesh::point>(mesh->vertices[mesh->faces[i][1]]);
       glm::vec3 v2 = trimesh_to_glm<trimesh::point>(mesh->vertices[mesh->faces[i][2]]);
       const size_t offset =  i * vertices_in_face * coords_per_vertex;
-      memcpy((triangles) + offset                         , glm::value_ptr(v0), sizeof(glm::vec3));
-      memcpy((triangles) + offset + coords_per_vertex     , glm::value_ptr(v0), sizeof(glm::vec3));
-      memcpy((triangles) + offset + 2 * coords_per_vertex , glm::value_ptr(v0), sizeof(glm::vec3));
+      memcpy((t) + offset                         , glm::value_ptr(v0), sizeof(glm::vec3));
+      memcpy((t) + offset + coords_per_vertex     , glm::value_ptr(v1), sizeof(glm::vec3));
+      memcpy((t) + offset + 2 * coords_per_vertex , glm::value_ptr(v2), sizeof(glm::vec3));
     }
-    device_triangles.push_back(triangles);
+    device_triangles.push_back(t);
+    break;
   }
-  return device_triangles;
 }
 
 
@@ -229,7 +231,6 @@ void loadMeshes(const nlohmann::json& jsonfile, std::vector<std::shared_ptr<trim
     meshptr->need_faces();
     meshptr->need_bbox();
     meshes.push_back(meshptr);
-    break;
   }
 }
 
@@ -323,7 +324,8 @@ int main(int argc, char *argv[]) {
 
   std::cout << "Moving meshes to Device" << std::endl;
 
-  std::vector<float*> device_triangles = multipleMeshesToGPU(themeshes);
+  std::vector<float*> device_triangles;
+  multipleMeshesToGPU(themeshes, device_triangles);
 
   std::cout << "\n## VOXELIZATION SETUP" << std::endl;
   std::cout << "\tgrid delimiters:" << std::endl;
