@@ -510,7 +510,7 @@ __global__ void clear(unsigned int* dst, const voxinfo info, bool morton_order) 
   
 }
 
-void solid_voxelize(const voxinfo& v, std::vector<float*>& triangle_data, unsigned int* vtable, 
+void solid_voxelize(const std::vector<voxinfo>& v, std::vector<float*>& triangle_data, unsigned int* vtable, 
     bool morton_code) {
   float elapsed_time;
 
@@ -525,37 +525,35 @@ void solid_voxelize(const voxinfo& v, std::vector<float*>& triangle_data, unsign
   int minGridSize;
   int gridSize;
 
-  cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, voxelize_triangle, 0, 0);
-  gridSize = (v.n_triangles + blockSize - 1) / blockSize;
-  std::cout << "CUDA GRIDSIZE: " << gridSize << " , " << "BLOCKSIZE: " << blockSize << std::endl;
 
-  size_t vtable_size = ((size_t) v.gridsize.x * v.gridsize.y * v.gridsize.z) / 8.0f;
 
+  size_t vtable_size = ((size_t) v[0].gridsize.x * v[0].gridsize.y * v[0].gridsize.z) / 8.0f;
   unsigned int* vtable_carved;
   checkCudaErrors(cudaMallocManaged((void**)&vtable_carved, vtable_size));
   unsigned int* vtable_obj;
   checkCudaErrors(cudaMallocManaged((void**)&vtable_obj, vtable_size));
 
-  std::cout << "NUMBER OF DEVICE TRIANGLES: " << triangle_data.size() << std::endl;
   int count = 1;
   for (size_t mesh = 0; mesh < triangle_data.size(); ++mesh) {
+    cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, voxelize_triangle, 0, 0);
+    gridSize = (v[mesh].n_triangles + blockSize - 1) / blockSize;
     std::cout << " - voxelizing obj #  " << count << std::endl;
     checkCudaErrors(cudaMemset((void**)vtable_carved, -1, vtable_size));
     checkCudaErrors(cudaMemset(vtable_obj, 0, vtable_size));
 
     //clear<<<v.gridsize.y, v.gridsize.x>>>(vtable, v, morton_code);
     checkCudaErrors(cudaDeviceSynchronize());
-    voxelize_triangle<<<gridSize, blockSize>>>(v, triangle_data[mesh], vtable_obj, morton_code);
+    voxelize_triangle<<<gridSize, blockSize>>>(v[mesh], triangle_data[mesh], vtable_obj, morton_code);
     checkCudaErrors(cudaDeviceSynchronize());
-    carveX<<<v.gridsize.z, v.gridsize.y>>>(vtable_obj, vtable_carved, v, morton_code);
+    carveX<<<v[mesh].gridsize.z, v[mesh].gridsize.y>>>(vtable_obj, vtable_carved, v[mesh], morton_code);
     checkCudaErrors(cudaDeviceSynchronize());
-    carveY<<<v.gridsize.z, v.gridsize.x>>>(vtable_obj, vtable_carved, v, morton_code);
+    carveY<<<v[mesh].gridsize.z, v[mesh].gridsize.x>>>(vtable_obj, vtable_carved, v[mesh], morton_code);
     checkCudaErrors(cudaDeviceSynchronize());
-    carveZ<<<v.gridsize.y, v.gridsize.x>>>(vtable_obj, vtable_carved, v, morton_code);
+    carveZ<<<v[mesh].gridsize.y, v[mesh].gridsize.x>>>(vtable_obj, vtable_carved, v[mesh], morton_code);
     checkCudaErrors(cudaDeviceSynchronize());
-    mergeVtables<<<v.gridsize.y, v.gridsize.x>>>(vtable_obj, vtable_carved, v, morton_code);
+    mergeVtables<<<v[mesh].gridsize.y, v[mesh].gridsize.x>>>(vtable_obj, vtable_carved, v[mesh], morton_code);
     checkCudaErrors(cudaDeviceSynchronize());
-    mergeVtables<<<v.gridsize.y, v.gridsize.x>>>(vtable, vtable_obj, v, morton_code);
+    mergeVtables<<<v[mesh].gridsize.y, v[mesh].gridsize.x>>>(vtable, vtable_obj, v[mesh], morton_code);
     checkCudaErrors(cudaDeviceSynchronize());
 
     ++count;

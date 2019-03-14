@@ -48,7 +48,7 @@ unsigned int gridsize = 256;
 float griddim = 1.5;
 bool useThrustPath = false;
 
-void solid_voxelize(const voxinfo & v,std::vector<float*>& device_triangles, unsigned int* vtable, 
+void solid_voxelize(const std::vector<voxinfo> & v,std::vector<float*>& device_triangles, unsigned int* vtable, 
     bool morton_coded);
 
 size_t computeNumberOfFaces(const std::vector<std::shared_ptr<trimesh::TriMesh>>& meshes) {
@@ -101,17 +101,17 @@ void multipleMeshesToGPU(const std::vector<std::shared_ptr<trimesh::TriMesh>>& m
     size_t n_faces = mesh->faces.size();
     const size_t n_floats = sizeof(float) * vertices_in_face * coords_per_vertex * n_faces;
     
-    checkCudaErrors(cudaMallocManaged((void**) &device_triangles[mesh_idx], n_floats));
+    checkCudaErrors(cudaMallocManaged((void**)(&device_triangles[mesh_idx]), n_floats));
     for (size_t i = 0; i < n_faces; ++i) {
       glm::vec3 v0 = trimesh_to_glm<trimesh::point>(mesh->vertices[mesh->faces[i][0]]);
       glm::vec3 v1 = trimesh_to_glm<trimesh::point>(mesh->vertices[mesh->faces[i][1]]);
       glm::vec3 v2 = trimesh_to_glm<trimesh::point>(mesh->vertices[mesh->faces[i][2]]);
       const size_t offset =  i * vertices_in_face * coords_per_vertex;
-      memcpy((device_triangles[mesh_idx]) + offset                         ,
+      memcpy(device_triangles[mesh_idx] + offset                         ,
           glm::value_ptr(v0), sizeof(glm::vec3));
-      memcpy((device_triangles[mesh_idx]) + offset + coords_per_vertex     , 
+      memcpy(device_triangles[mesh_idx] + offset + coords_per_vertex     , 
           glm::value_ptr(v1), sizeof(glm::vec3));
-      memcpy((device_triangles[mesh_idx]) + offset + 2 * coords_per_vertex , 
+      memcpy(device_triangles[mesh_idx] + offset + 2 * coords_per_vertex , 
           glm::value_ptr(v2), sizeof(glm::vec3));
     }
   }
@@ -123,7 +123,7 @@ float* meshToGPU_managed(const trimesh::TriMesh *mesh) {
 	size_t n_floats = sizeof(float) * 9 * (mesh->faces.size());
 	float* device_triangles;
 	fprintf(stdout, "[Mesh] Allocating %llu kB of CUDA-managed UNIFIED memory \n", (size_t)(n_floats / 1024.0f));
-	checkCudaErrors(cudaMallocManaged((void**) &device_triangles, n_floats)); // managed memory
+	checkCudaErrors(cudaMalloc((void**) &device_triangles, n_floats)); // managed memory
 	fprintf(stdout, "[Mesh] Copy %llu triangles to CUDA-managed UNIFIED memory \n", (size_t)(mesh->faces.size()));
 	for (size_t i = 0; i < mesh->faces.size(); i++) {
 		glm::vec3 v0 = trimesh_to_glm<trimesh::point>(mesh->vertices[mesh->faces[i][0]]);
@@ -259,6 +259,7 @@ void readObjectPoses(const nlohmann::json& jsondata, std::vector<trimesh::xform>
   }
 }
 
+
 void transformMeshes(trimesh::xform& camera_pose, 
                   std::vector<trimesh::xform>& object_poses,
                   std::vector<std::shared_ptr<trimesh::TriMesh>>& meshes) {
@@ -319,28 +320,38 @@ int main(int argc, char *argv[]) {
   std::cout << "Moving meshes to Device" << std::endl;
 
   std::vector<float*> device_triangles(themeshes.size());
-  multipleMeshesToGPU(themeshes, device_triangles);
+  std::cout << "DEVICE TRIANGLES" << std::endl;
+  for (int kk = 0; kk < device_triangles.size(); ++kk) {
+    std::cout << device_triangles[kk] << std::endl;
+  }
 
+  multipleMeshesToGPU(themeshes, device_triangles);
+  std::cout << "DEVICE TRIANGLES" << std::endl;
+  for (int kk = 0; kk < device_triangles.size(); ++kk) {
+    std::cout << *device_triangles[kk] << std::endl;
+  }
+  
   std::cout << "\n## VOXELIZATION SETUP" << std::endl;
   std::cout << "\tgrid delimiters:" << std::endl;
     
   glm::vec3 bbox_min(- 0.5 * griddim, - 0.5 * griddim, - 0.2 * griddim);
   glm::vec3 bbox_max(  0.5 * griddim,   0.5 * griddim,   0.8 * griddim);
 
-  const size_t faces = computeNumberOfFaces(themeshes);
   AABox<glm::vec3> bbox_mesh(bbox_min, bbox_max);
-  voxinfo vinfo(createMeshBBCube<glm::vec3>(bbox_mesh), glm::uvec3(gridsize, gridsize, gridsize), faces);
-  vinfo.print();
+  std::vector<voxinfo> infos;
+  for (const auto& mesh: themeshes) {
+    const size_t faces = mesh->faces.size();
+    voxinfo vinfo(createMeshBBCube<glm::vec3>(bbox_mesh), glm::uvec3(gridsize, gridsize, gridsize), faces);
+    infos.push_back(vinfo);
+  }
 
   size_t vtable_size = ((size_t) gridsize * gridsize * gridsize) / 8.0f;
-
-  unsigned int* vtable;
-  std::cout << "[Voxel Grid] Allocating " << size_t(vtable_size / 1024.0f) << " kB of CUDA-managed UNIFIED memory" 
+unsigned int* vtable; std::cout << "[Voxel Grid] Allocating " << size_t(vtable_size / 1024.0f) << " kB of CUDA-managed UNIFIED memory" 
     << std::endl;
   checkCudaErrors(cudaMallocManaged((void **)&vtable, vtable_size));
 
   std::cout << "\n## GPU VOXELIZATION" << std::endl;
-  solid_voxelize(vinfo, device_triangles, vtable,  (outputformat == output_morton));
+  solid_voxelize(infos, device_triangles, vtable,  (outputformat == output_morton));
   
 
   if (outputformat == output_morton) {
@@ -350,6 +361,6 @@ int main(int argc, char *argv[]) {
   else if (outputformat == output_binvox) {
     std::cout << "\n## OUTPUT TO BINVOX FILE" << std::endl;
     std::string binvox_file = filename.substr(0, filename.find_last_of("/")) + "/scene.binvox";
-    write_binvox(vtable, binvox_file, vinfo);
+    write_binvox(vtable, binvox_file, infos[0]);
   }
 }
