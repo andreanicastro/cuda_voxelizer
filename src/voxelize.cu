@@ -55,18 +55,16 @@ __device__ inline uint64_t mortonEncode_LUT(unsigned int x, unsigned int y, unsi
 
 // Possible optimization: check bit before you set it - don't need to do atomic operation if it's already set to 1
 // For now: overhead, so it seems
-//__device__ __inline__ bool checkBit(unsigned int* voxel_table, size_t index){
-//	size_t int_location = index / size_t(32);
-//	unsigned int bit_pos = size_t(31) - (index % size_t(32)); // we count bit positions RtL, but array indices LtR
-//	return ((voxel_table[int_location]) & (1 << bit_pos));
-//}
-__device__ __inline__ void flipBit(unsigned int* voxel_table, size_t index, size_t value) {
+__device__ __inline__ bool checkBit(unsigned int* voxel_table, size_t index){
+	size_t int_location = index / size_t(32);
+	unsigned int bit_pos = size_t(31) - (index % size_t(32)); // we count bit positions RtL, but array indices LtR
+	return ((voxel_table[int_location]) & (1 << bit_pos));
+}
+__device__ __inline__ void flipBit(unsigned int* voxel_table, size_t index) {
   size_t int_location = index / size_t(32);
   unsigned int bit_pos = size_t(31) - (index % size_t(32));
   unsigned int mask;
-  if(value == 1) {
-     mask = 1 << bit_pos;
-  }
+  mask = 1 << bit_pos;
   atomicXor(&(voxel_table[int_location]), mask);
 }
 
@@ -77,6 +75,14 @@ __device__ __inline__ void setBit(unsigned int* voxel_table, size_t index){
 	unsigned int bit_pos = size_t(31) - (index % size_t(32)); // we count bit positions RtL, but array indices LtR
 	unsigned int mask = 1 << bit_pos;
 	atomicOr(&(voxel_table[int_location]), mask);
+}
+
+__device__ __inline__ void unsetBit(unsigned int* voxel_table, size_t index) {
+
+  size_t int_location = index / size_t(32);
+  unsigned int bit_pos = size_t(31) - (index & size_t(32));
+  unsigned int mask = 1 << bit_pos;
+  atomicAnd(&(voxel_table[int_location]), ~mask);
 }
 
 
@@ -292,18 +298,45 @@ __global__ void rasterization(voxinfo info, float* triangle_data, unsigned int* 
   }
 }
 
-__global__ void fill_pass(voxinfo info, float* triangle_data, unsigned int* vtable, bool morton_order) {
+//__global__ void fill_pass(voxinfo info, float* triangle_data, unsigned int* vtable, bool morton_order) {
+//  int x = threadIdx.x;
+//  int z = blockIdx.x;
+//
+//  int ymax = info.gridsize.y - 1;
+//
+//  bool flip = false;
+//  for (int y = 1; y < ymax; ++y) {
+//    char value = checkVoxel(x, y, z, info.gridsize.x, vtable);
+//     flip = true;
+//
+//    
+//    size_t location;
+//    if (morton_order) {
+//      location = mortonEncode_LUT(x, y, z);
+//    } else {
+//      location = x + (y * info.gridsize.y) + (z * info.gridsize.y * info.gridsize.z);
+//    }
+//
+//    size_t int_location = location / size_t(32);
+//    unsigned int bit_pos = size_t(31) - (location % size_t(32));
+//
+//    unsigned int mask = 0;
+//    if (prev_value == char(1)) {
+//      mask = 1 << bit_pos;
+//    } 
+//    atomicXor(&(vtable[int_location]), mask);
+//  }
+//}
+
+
+__global__ void carveY(unsigned int* vtable_obj, unsigned int* vtable_carved, 
+                       const voxinfo& info, bool morton_order) {
   int x = threadIdx.x;
   int z = blockIdx.x;
 
-  int ymax = info.gridsize.y - 1;
+  size_t ymax = info.gridsize.y - 1;
 
-  bool flip = false;
-  for (int y = 1; y < ymax; ++y) {
-    char value = checkVoxel(x, y, z, info.gridsize.x, vtable);
-     flip = true;
-
-    
+  for (size_t y = 0; y < ymax; ++y) {
     size_t location;
     if (morton_order) {
       location = mortonEncode_LUT(x, y, z);
@@ -311,19 +344,146 @@ __global__ void fill_pass(voxinfo info, float* triangle_data, unsigned int* vtab
       location = x + (y * info.gridsize.y) + (z * info.gridsize.y * info.gridsize.z);
     }
 
-    size_t int_location = location / size_t(32);
-    unsigned int bit_pos = size_t(31) - (location % size_t(32));
+    if (checkBit(vtable_obj, location)) { 
+      break;
+    }
 
-    unsigned int mask = 0;
-    if (prev_value == char(1)) {
-      mask = 1 << bit_pos;
-    } 
-    atomicXor(&(vtable[int_location]), mask);
+    unsetBit(vtable_carved, location);
+  }
+
+  for (size_t y = ymax; y >= 0; --y) {
+    size_t location;
+    if (morton_order) {
+      location = mortonEncode_LUT(x, y, z);
+    } else {
+      location = x + (y * info.gridsize.y) + (z * info.gridsize.y * info.gridsize.z);
+    }
+
+    if (checkBit(vtable_obj, location)) {
+      break;
+    }
+
+
+    unsetBit(vtable_carved, location);
   }
 }
 
-void solid_voxelize(const voxinfo& v, float* triangle_data, unsigned int* vtable,
-    bool morton_code, bool solid) {
+
+__global__ void carveX(unsigned int* vtable_obj, unsigned int* vtable_carved, 
+                      const voxinfo& info, bool morton_order) {
+  int y = threadIdx.x;
+  int z = blockIdx.x;
+
+  size_t xmax = info.gridsize.x - 1;
+  
+  for (size_t x = 0; x <= xmax; ++x) {
+    size_t location;
+
+    if (morton_order) {
+      location = mortonEncode_LUT(x, y, z);
+    } else {
+      location = x + (y * info.gridsize.y) + (z * info.gridsize.y * info.gridsize.z);
+    }
+
+    if (checkBit(vtable_obj, location)) {
+      break;
+    }
+
+
+    unsetBit(vtable_carved, location);
+  }
+
+  for (size_t x = xmax; x >= 0; --x) {
+
+    size_t location;
+
+    if (morton_order) {
+      location = mortonEncode_LUT(x, y ,z);
+    } else {
+      location = x + (y * info.gridsize.y) + (z * info.gridsize.y * info.gridsize.z);
+    }
+
+    if (checkBit(vtable_obj, location)) {
+      break;
+    }
+
+    unsetBit(vtable_carved, location);
+  }
+}
+
+
+__global__ void carveZ(unsigned int* vtable_obj, unsigned int* vtable_carved, 
+                       const voxinfo& info, bool morton_order) {
+  int x = threadIdx.x;
+  int y = blockIdx.x;
+
+  size_t zmax = info.gridsize.z - 1;
+
+  for(size_t z = 0; z <= zmax; ++z) {
+    size_t location;
+
+    if(morton_order) {
+      location = mortonEncode_LUT(x, y, z);
+    } else {
+      location = x + (y * info.gridsize.y) + (z * info.gridsize.y * info.gridsize.z);
+    }
+
+    if (checkBit(vtable_obj, location)) {
+      break;
+    }
+
+
+    unsetBit(vtable_carved, location);
+  }
+
+  for (size_t z = zmax; z >= 0; --z) {
+
+    size_t location;
+
+    if(morton_order) {
+      location = mortonEncode_LUT(x, y, z);
+    } else {
+      location = x + (y * info.gridsize.y) + (z * info.gridsize.y * info.gridsize.z);
+    }
+
+    if (checkBit(vtable_obj, location)) {
+      break;
+    }
+
+    unsetBit(vtable_carved, location);
+  }
+}
+
+__global__ void mergeVtables(unsigned int* v1, unsigned int* v2, const voxinfo& info, bool morton_order) {
+  int x = threadIdx.x;
+  printf("%d\n", x);
+
+  size_t zmax = info.gridsize.z - 1;
+  size_t ymax = info.gridsize.y - 1;
+
+  for (size_t y = 0; y <= ymax; ++y) {
+
+    for (size_t z = 0; z <= zmax; ++z) {
+
+      size_t location;
+      if(morton_order) {
+        location = mortonEncode_LUT(x, y, z);
+      } else {
+        location = x + (y * info.gridsize.y) + (z * info.gridsize.y * info.gridsize.z);
+      }
+
+      printf("working");
+      if (!checkBit(v2, location)) {
+        continue;
+      }
+
+      setBit(v1, location);
+    }
+  }
+}
+
+void solid_voxelize(const voxinfo& v, std::vector<float*> triangle_data, unsigned int* vtable, 
+    bool morton_code) {
   float elapsed_time;
 
 
@@ -339,14 +499,34 @@ void solid_voxelize(const voxinfo& v, float* triangle_data, unsigned int* vtable
 
   cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, voxelize_triangle, 0, 0);
   gridSize = (v.n_triangles + blockSize - 1) / blockSize;
+  std::cout << "CUDA GRIDSIZE: " << gridSize << " , " << "BLOCKSIZE: " << blockSize << std::endl;
 
+  size_t vtable_size = ((size_t) v.gridsize.x * v.gridsize.y * v.gridsize.z) / 8.0f;
 
-  voxelize_triangle<< <gridSize, blockSize>> >(v, triangle_data, vtable, morton_code);
-//  createPlane<<<v.gridsize.x, v.gridsize.y>>>(v, vtable);
-  //rasterization<< <gridSize, blockSize >> >(v, triangle_data, vtable, morton_code);
-  fill_pass<< <v.gridsize.x, v.gridsize.y>> >(v, triangle_data, vtable, morton_code);
-//  voxelize_triangle<< <gridSize, blockSize>> >(v, triangle_data, vtable, morton_code);
-  cudaDeviceSynchronize();
+  unsigned int* vtable_carved;
+  checkCudaErrors(cudaMallocManaged((void**)&vtable_carved, vtable_size));
+  unsigned int* vtable_obj;
+  checkCudaErrors(cudaMallocManaged((void**)&vtable_obj, vtable_size));
+
+  int count = 1;
+  for (float* gpu_triangles: triangle_data) {
+    std::cout << " - voxelizing obj #  " << count << std::endl;
+//    checkCudaErrors(cudaMemset((void**)vtable_obj, -1, vtable_size));
+//    checkCudaErrors(cudaMemset((void**)vtable_obj, -1, vtable_size));
+
+    voxelize_triangle<<<gridSize, blockSize>>>(v, gpu_triangles, vtable_obj, morton_code);
+    //carveX<<<v.gridsize.y, v.gridsize.z>>>(vtable_obj, vtable_carved, v, morton_code);
+    //carveY<<<v.gridsize.x, v.gridsize.z>>>(vtable_obj, vtable_carved, v, morton_code);
+    //carveZ<<<v.gridsize.x, v.gridsize.y>>>(vtable_obj, vtable_carved, v, morton_code);
+    //mergeVtables<<<v.gridsize.x, v.gridsize.y>>>(vtable_obj, vtable_carved, v, morton_code);
+    mergeVtables<<<1, 256>>>(vtable, vtable_obj, v, morton_code);
+    cudaDeviceSynchronize();
+    ++count;
+  }
+  // checkCudaErrors(cudaMemcpy(vtable, vtable_obj, vtable_size, cudaMemcpyDeviceToDevice));
+ 
+
+  //vtable = vtable_obj;
 }
 
 

@@ -7,8 +7,7 @@
 
 #include "util.h"
 #include "util_io.h"
-#include "util_cuda.h"
-
+#include "util_cuda.h" 
 #include "TriMesh_algo.h"
 
 std::string version_number = "v0.3";
@@ -49,8 +48,8 @@ unsigned int gridsize = 256;
 float griddim = 1.5;
 bool useThrustPath = false;
 
-void solid_voxelize(const voxinfo & v, float* triangle_data, unsigned int* vtable,
-    bool morton_code, bool solid);
+void solid_voxelize(const voxinfo & v, std::vector<float*> triangle_data, unsigned int* vtable, 
+    bool morton_coded);
 
 size_t computeNumberOfFaces(const std::vector<std::shared_ptr<trimesh::TriMesh>>& meshes) {
   size_t n_faces = 0; 
@@ -90,6 +89,31 @@ float* meshesToGPU(const std::vector<std::shared_ptr<trimesh::TriMesh>>& meshes)
   return device_triangles;
 }
 
+
+std::vector<float*> multipleMeshesToGPU(const std::vector<std::shared_ptr<trimesh::TriMesh>>& meshes){
+  const size_t vertices_in_face = 3;
+  const size_t coords_per_vertex = 3;
+
+  std::vector<float*> device_triangles;
+  for (const auto& mesh: meshes) {
+    size_t n_faces = mesh->faces.size();
+    const size_t n_floats = sizeof(float) * vertices_in_face * coords_per_vertex * n_faces;
+    
+    float* triangles;
+    checkCudaErrors(cudaMallocManaged((void**) &triangles, n_floats));
+    for (size_t i = 0; i < n_faces; ++i) {
+      glm::vec3 v0 = trimesh_to_glm<trimesh::point>(mesh->vertices[mesh->faces[i][0]]);
+      glm::vec3 v1 = trimesh_to_glm<trimesh::point>(mesh->vertices[mesh->faces[i][1]]);
+      glm::vec3 v2 = trimesh_to_glm<trimesh::point>(mesh->vertices[mesh->faces[i][2]]);
+      const size_t offset =  i * vertices_in_face * coords_per_vertex;
+      memcpy((triangles) + offset                         , glm::value_ptr(v0), sizeof(glm::vec3));
+      memcpy((triangles) + offset + coords_per_vertex     , glm::value_ptr(v0), sizeof(glm::vec3));
+      memcpy((triangles) + offset + 2 * coords_per_vertex , glm::value_ptr(v0), sizeof(glm::vec3));
+    }
+    device_triangles.push_back(triangles);
+  }
+  return device_triangles;
+}
 
 
 // METHOD 1: Helper function to transfer triangles to automatically managed CUDA memory ( > CUDA 7.x)
@@ -299,20 +323,13 @@ int main(int argc, char *argv[]) {
 
   std::cout << "Moving meshes to Device" << std::endl;
 
-  float* device_triangles = meshesToGPU(themeshes);
+  std::vector<float*> device_triangles = multipleMeshesToGPU(themeshes);
 
   std::cout << "\n## VOXELIZATION SETUP" << std::endl;
   std::cout << "\tgrid delimiters:" << std::endl;
     
   glm::vec3 bbox_min(- 0.5 * griddim, - 0.5 * griddim, - 0.2 * griddim);
   glm::vec3 bbox_max(  0.5 * griddim,   0.5 * griddim,   0.8 * griddim);
-
-  std::cout << "\t\tfront - bottom - left: "  << bbox_min.x << " , "
-                                              << bbox_min.y << " , "
-                                              << bbox_min.z << std::endl;
-  std::cout << "\t\tback - top - rigth: "     << bbox_max.x << " , " 
-                                              << bbox_max.y << " , " 
-                                              << bbox_max.z << std::endl;
 
   const size_t faces = computeNumberOfFaces(themeshes);
   AABox<glm::vec3> bbox_mesh(bbox_min, bbox_max);
@@ -324,11 +341,11 @@ int main(int argc, char *argv[]) {
   unsigned int* vtable;
   std::cout << "[Voxel Grid] Allocating " << size_t(vtable_size / 1024.0f) << " kB of CUDA-managed UNIFIED memory" 
     << std::endl;
-
   checkCudaErrors(cudaMallocManaged((void **)&vtable, vtable_size));
 
   std::cout << "\n## GPU VOXELIZATION" << std::endl;
-  solid_voxelize(vinfo, device_triangles, vtable, (outputformat == output_morton), true);
+  solid_voxelize(vinfo, device_triangles, vtable,  (outputformat == output_morton));
+  
 
   if (outputformat == output_morton) {
     std::cout << "\n## OUTPUT TO BINARY FILE" << std::endl;

@@ -22,7 +22,8 @@ string version_number = "v0.3";
 // Forward declaration of CUDA functions
 float* meshToGPU_thrust(const trimesh::TriMesh *mesh); // METHOD 3 to transfer triangles can be found in thrust_operations.cu(h)
 void cleanup_thrust();
-void voxelize(const voxinfo & v, float* triangle_data, unsigned int* vtable, bool useThrustPath, bool morton_code);
+void voxelize(const voxinfo & v, float* triangle_data, unsigned int* vtable, 
+    bool useThrustPath, bool morton_code, bool solid);
 
 // Output formats
 enum OutputFormat { output_binvox, output_morton};
@@ -201,7 +202,7 @@ int main(int argc, char *argv[]) {
 		checkCudaErrors(cudaHostAlloc((void **)&vtable, vtable_size, cudaHostAllocDefault));
 	}
 	fprintf(stdout, "\n## GPU VOXELISATION \n");
-	voxelize(v, device_triangles, vtable, useThrustPath, (outputformat == output_morton));
+	voxelize(v, device_triangles, vtable, useThrustPath, (outputformat == output_morton), false);
 
 	if (outputformat == output_morton){
 		fprintf(stdout, "\n## OUTPUT TO BINARY FILE \n");
