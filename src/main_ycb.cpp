@@ -318,8 +318,7 @@ int main(int argc, char *argv[]) {
 
   std::cout << "Moving meshes to Device" << std::endl;
 
-  std::vector<float*> device_triangles;
-  device_triangles.reserve(themeshes.size());
+  std::vector<float*> device_triangles(themeshes.size());
   multipleMeshesToGPU(themeshes, device_triangles);
 
   std::cout << "\n## VOXELIZATION SETUP" << std::endl;
